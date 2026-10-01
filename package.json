@@ -1,0 +1,54 @@
+{
+  "name": "@carl-stone/pi-optmem",
+  "version": "0.1.0",
+  "description": "OptMem for pi: explicit initialization, subagent opt-out, and compaction-safe memory context",
+  "type": "module",
+  "license": "UNLICENSED",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "optmem",
+    "agent-memory"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/carl-stone/pi-optmem.git"
+  },
+  "homepage": "https://github.com/carl-stone/pi-optmem#readme",
+  "bugs": {
+    "url": "https://github.com/carl-stone/pi-optmem/issues"
+  },
+  "files": [
+    "extension.ts",
+    "src/",
+    "memo",
+    "UPSTREAM.md",
+    "README.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./extension.ts"
+    ]
+  },
+  "scripts": {
+    "test": "tsx --test test/extension.test.ts test/memo.test.ts test/pi-runtime.test.ts",
+    "test:upstream": "python3 upstream-test.py",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm test && npm run test:upstream"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.99.2",
+    "@earendil-works/pi-coding-agent": "0.99.2",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.23.15",
+    "typebox": "^1.3.34",
+    "typescript": "^6.0.3"
+  }
+}
