@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { configuration, MemoClient } from "../src/memo.ts";
 import { createOptmemExtension, MEMORY_MESSAGE } from "../extension.ts";
+import { memoryInstructions } from "../src/instructions.ts";
 
 async function setup(t: TestContext) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-optmem-runtime-"));
@@ -41,6 +42,56 @@ function options(cwd: string) {
     noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
   };
 }
+
+test("real Pi renders memory guidance once in its own system-prompt section", async (t) => {
+  const { cwd, env, client } = await setup(t);
+  let rendered = "";
+  const loader = new DefaultResourceLoader({
+    ...options(cwd),
+    extensionFactories: [
+      createOptmemExtension({ env }),
+      (pi) => { pi.on("before_agent_start", (event) => { rendered = event.systemPrompt; }); },
+    ],
+  });
+  const { runner, errors } = await runnerFor(cwd, loader);
+  await runner.emit({ type: "session_start", reason: "startup" });
+  const tool = runner.getToolDefinition("optmem")!;
+  assert.ok(tool);
+  assert.equal(tool.promptGuidelines, undefined);
+  assert.equal(tool.executionMode, "sequential");
+  assert.doesNotMatch(tool.description, /CLI|shell|subagent/i);
+  assert.deepEqual((tool.parameters as any).required, ["action"]);
+
+  const first = await runner.emitBeforeAgentStart("Hello", undefined, {
+    cwd, selectedTools: ["read", "optmem"],
+    toolSnippets: { optmem: tool.promptSnippet! },
+    sections: { other: "Other extension instructions" },
+  });
+  const expected = memoryInstructions(client.config.directory);
+  assert.ok(rendered.includes(`<optmem>\n${expected}\n</optmem>`));
+  assert.match(rendered, /- optmem: Read and maintain permanent cross-session memory/);
+  assert.ok(rendered.includes("<other>\nOther extension instructions\n</other>"));
+  assert.ok(rendered.startsWith("You are an expert coding assistant"));
+  assert.doesNotMatch(rendered, /- ## Memory|call `optmem` with|memo CLI/i);
+  assert.equal(first.systemPromptOptions.forceSystemPrompt, undefined);
+
+  await runner.emitBeforeAgentStart("Next turn", undefined, first.systemPromptOptions);
+  assert.equal(rendered.match(/<optmem>/g)?.length, 1);
+  assert.equal(rendered.match(/Your memory is OptMem:/g)?.length, 1);
+
+  await runner.emitBeforeAgentStart("Custom prompt", undefined, {
+    ...first.systemPromptOptions, customPrompt: "User's custom system prompt",
+  });
+  assert.ok(rendered.startsWith("User's custom system prompt"));
+  assert.ok(rendered.includes(`<optmem>\n${expected}\n</optmem>`));
+
+  const inactive = await runner.emitBeforeAgentStart("Tool disabled", undefined, {
+    ...first.systemPromptOptions, selectedTools: ["read"],
+  });
+  assert.equal(inactive.systemPromptOptions.sections.optmem, undefined);
+  assert.doesNotMatch(rendered, /<optmem>|Your memory is OptMem:/);
+  assert.deepEqual(errors, []);
+});
 
 test("real Pi loads the packaged extension from disk without initializing during load", async (t) => {
   const { cwd, env, client } = await setup(t);

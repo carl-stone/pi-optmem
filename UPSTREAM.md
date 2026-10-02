@@ -22,7 +22,8 @@ Nothing downloads or updates the engine at runtime.
 
 ## Attribution and licensing
 
-Memory design, engine, and engine tests: Victor Taelin and OptMem contributors.
+Memory design, engine, engine tests, and original agent instructions:
+Victor Taelin and OptMem contributors.
 Pi integration inspiration: Evan Verma's
 [pi-pod/pi-optmem](https://github.com/pi-pod/pi-optmem).
 The TypeScript integration in this repository is newly written.

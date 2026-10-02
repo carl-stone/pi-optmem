@@ -1,7 +1,7 @@
 {
   "name": "@carl-stone/pi-optmem",
   "version": "0.1.0",
-  "description": "OptMem for pi: explicit initialization, subagent opt-out, and compaction-safe memory context",
+  "description": "OptMem for pi: permanent memory, automatic startup, and compaction-safe context",
   "type": "module",
   "license": "UNLICENSED",
   "keywords": [
@@ -31,7 +31,7 @@
     ]
   },
   "scripts": {
-    "test": "tsx --test test/extension.test.ts test/memo.test.ts test/pi-runtime.test.ts",
+    "test": "tsx --test test/extension.test.ts test/memo.test.ts test/pi-runtime.test.ts test/protocol.test.ts",
     "test:upstream": "python3 upstream-test.py",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test && npm run test:upstream"

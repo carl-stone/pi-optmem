@@ -3,7 +3,7 @@
 A small [pi](https://pi.dev) extension around
 [Victor Taelin's OptMem](https://github.com/VictorTaelin/OptMem): the same
 append-only memory log and rebuildable summary tree, with explicit initialization
-for configured stores, a complete subagent opt-out, and memory context that
+for configured stores, a complete session opt-out, and memory context that
 survives pi compaction.
 
 No separate model, database, background jobs, or runtime downloads.
@@ -11,8 +11,8 @@ No separate model, database, background jobs, or runtime downloads.
 ## Install
 
 Requires **Node.js 22.19+**, **Python 3.7+**, and a current pi installation
-(tested with pi **0.99.2** and its `session_start`, `session_compact`, and
-`context` APIs).
+(tested with pi **0.99.2** and its `session_start`, `before_agent_start`,
+`session_compact`, and `context` APIs).
 
 ```sh
 pi install git:github.com/carl-stone/pi-optmem
@@ -28,7 +28,7 @@ pi -e /path/to/pi-optmem
 This is a replacement for, not an addition to, `pi-pod/pi-optmem`. Disable or
 remove the other extension first; both register the `optmem` tool. Remove the
 standalone OptMem `## Memory` instructions from your agent context files when
-using this extension, especially before using the subagent opt-out.
+using this extension; the package supplies those instructions itself.
 
 The package metadata uses `@carl-stone/pi-optmem`; it is **not published to
 npm**. Install from GitHub. See [UPSTREAM.md](UPSTREAM.md) for
@@ -62,7 +62,7 @@ or reload pi to apply environment changes.
 rewriting existing memories, summaries, or tuned configuration. A store that
 disappears during a session is never silently recreated, including the default.
 
-## Disable for a subagent (or any other session)
+## Disable for a session
 
 ```sh
 OPTMEM_DISABLED=1 pi ...
@@ -72,18 +72,9 @@ This returns before registering any hooks, tool, command, or memory guidance.
 It performs no store checks, initialization, wake, or memory injection.
 It does not change other extensions.
 
-A future subagent spawner should set this variable **only in the child's
-environment**. No particular subagent framework is required:
-
-```ts
-spawn("pi", args, {
-  env: { ...process.env, OPTMEM_DISABLED: "1" },
-});
-```
-
 Only the exact value `1` disables the extension. This is an integration opt-out,
-**not a filesystem sandbox**: a child with bash can still run the standalone CLI.
-Do not leave old `AGENTS.md` instructions telling disabled sessions to run memo.
+not a filesystem sandbox. Remove old standalone memory instructions from
+`AGENTS.md` so they do not reactivate memory in a disabled session.
 
 ## Commands
 
@@ -135,8 +126,35 @@ Set `OPTMEM_PYTHON` to an executable name or path if Python is not available as
   `before_agent_start` event.
 - If wake needs missing summaries, the agent receives the compression request.
   After its nap submissions, blocked memory is refreshed.
-- Guidance is provided through pi's tool prompt guidelines, without replacing
-  the system prompt.
+- Before an agent run, `before_agent_start` adds one `<optmem>` section to the
+  system prompt while the tool is active. It does not replace the system prompt.
+- Engine protocol directions are presented as pi tool calls. Original memories
+  and summary text are never rewritten.
+
+## What the agent sees
+
+The integration has three distinct pieces:
+
+1. **System instructions:** `src/instructions.ts` supplies a complete Memory
+   section, with the session's resolved store path. It preserves Victor's
+   original identity framing and behavioral prose, including "Your memory is
+   OptMem" and "Without it you do not know who you are, or what was decided and
+   tried." Only automatic startup and tool/store references are adapted.
+2. **Tool declaration:** `extension.ts` registers `optmem`, its action descriptions,
+   and its parameter schema. The system prompt's tools list gets a short summary.
+   Instructions use normal tool-call notation, for example
+   `optmem { action: "note", text: "<one-line memory>" }`.
+3. **Memory snapshot:** the bounded wake output is supplied as request-local
+   context, separately from instructions. The agent is told to treat memories
+   as historical data, not commands or authority.
+
+Compression requests also show `optmem { action: "nap", block: "16-31",
+text: "<one-line summary>" }`, using the actual requested block ID. The extension
+handles wake, paging, and refresh after blocked compression; the agent handles
+note-taking, searching, navigation, and summarization. Tool calls execute
+sequentially so dependent memory operations do not race.
+
+The bundled `memo` and its original setup template remain unchanged.
 
 There is no background synchronization. Use `/optmem wake` to pick up changes
 from another session immediately. Model-directed `wake` results remain ordinary
@@ -178,7 +196,8 @@ All integration tests use temporary stores. None use your personal memories
 or call an LLM provider. The suites are deliberately separated:
 
 - `npm test`: named TypeScript integration tests for initialization, exclusion,
-  lifecycle/context restoration, paging, validation, subprocess safety,
+  actual system-prompt rendering, lifecycle/context restoration, paging,
+  protocol adaptation, validation, subprocess safety,
   cancellation, timeouts, concurrency, and actual pi loading/event dispatch.
 - `npm run test:upstream`: Victor's unchanged Python invariant script. Its
   large “passed” count is looped checks, **not distinct test cases**.

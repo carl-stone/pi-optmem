@@ -7,7 +7,8 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { createOptmemExtension, MEMORY_MESSAGE, type ExtensionOptions } from "../extension.ts";
 import { MemoClient, type MemoConfig } from "../src/memo.ts";
-import type { Parameters as MemoryParameters } from "../src/arguments.ts";
+import { MEMORY_INSTRUCTIONS, memoryInstructions } from "../src/instructions.ts";
+import { argumentsFor, type Parameters as MemoryParameters } from "../src/arguments.ts";
 
 type Handler = (event: any, ctx: ExtensionContext) => any;
 type Command = Parameters<ExtensionAPI["registerCommand"]>[1];
@@ -115,8 +116,59 @@ test("extension loading alone has no memory side effects", async (t) => {
   const h = harness(cwd, environment());
   assert.equal(h.constructions, 0);
   assert.deepEqual(await readdir(cwd), []);
-  assert.equal(h.handlers.has("before_agent_start"), false);
-  assert.ok(h.tools.get("optmem")!.promptGuidelines?.length);
+  assert.equal(h.handlers.has("before_agent_start"), true);
+  assert.equal(h.tools.get("optmem")!.promptGuidelines, undefined);
+  assert.equal(h.tools.get("optmem")!.executionMode, "sequential");
+});
+
+test("memory instructions retain upstream framing and navigation without an extra tool-usage section", async () => {
+  const source = await readFile(new URL("../memo", import.meta.url), "utf8");
+  const template = /TEMPLATE = """\\\n([\s\S]*?)\n"""/.exec(source)?.[1];
+  assert.ok(template, "upstream setup template must exist");
+  const end = template.indexOf("\n\n### If you're a subagent:");
+  assert.ok(end > 0, "upstream section boundary must exist");
+  const adapted = template.slice(0, end)
+    .replace('- The tool is `{memo}`', '- The tool is `optmem`')
+    .replace('- Your memories are in `{data}`', '- Your memories are in the selected OptMem store')
+    .replace('Run `{memo} wake` before any other tool call, in every session, and', "The extension supplies OptMem's wake output automatically, in every session;")
+    .replace('`{memo} note "<1 line, max {chars} bytes>"`', '`optmem { action: "note", text: "<one-line memory>" }`')
+    .replace('`{memo} note`', '`optmem { action: "note", text: "..." }`')
+    .replace('`{data}`', 'the selected OptMem store')
+    .replace('`{memo} recall <regex>`', '`optmem { action: "recall", query: "<regex>" }`')
+    .replace('`{memo} zoom <a-b>`', '`optmem { action: "zoom", block: "16-31" }`');
+  // The note-taking policy is intentionally customized; keep the surrounding
+  // upstream framing and navigation intact without adding another instruction block.
+  assert.ok(MEMORY_INSTRUCTIONS.startsWith(adapted.slice(0, adapted.indexOf("Call `optmem"))));
+  assert.ok(MEMORY_INSTRUCTIONS.endsWith(adapted.slice(adapted.indexOf("Never edit or delete"))));
+  assert.doesNotMatch(MEMORY_INSTRUCTIONS, /### Using the tool|### Compression|### Memory data/);
+
+  const text = MEMORY_INSTRUCTIONS;
+  assert.match(text, /Your memory is OptMem:/);
+  assert.match(text, /Without it you do not know who you are, or what was decided and tried\./);
+  assert.match(text, /supplies OptMem's wake output automatically/);
+  assert.doesNotMatch(text, /subagent|OPTMEM_DISABLED|translate|memo CLI|\{memo\}|\{data\}|\{chars\}/i);
+  const examples = [...text.matchAll(/`optmem (\{[^`]+\})`/g)].map((match) =>
+    JSON.parse(match[1].replace(/([{,]\s*)(\w+):/g, '$1"$2":')) as MemoryParameters);
+  assert.deepEqual(examples.map((example) => example.action), ["note", "note", "recall", "zoom"]);
+  assert.doesNotMatch(text, /action:\s*"wake"|wake` before any other tool call|call `optmem` with/i);
+  for (const example of examples) assert.doesNotThrow(() => argumentsFor(example));
+});
+
+test("memory guidance is one prompt section using the captured store, only while the tool is active", async (t) => {
+  const cwd = await directory(t);
+  const h = harness(cwd, environment());
+  await h.start();
+  const systemPromptOptions = { selectedTools: ["optmem"], sections: { other: "Unrelated instructions" } as Record<string, string> };
+  await h.emit("before_agent_start", { systemPromptOptions });
+  assert.equal(systemPromptOptions.sections.optmem, memoryInstructions(h.client.config.directory));
+  assert.ok(systemPromptOptions.sections.optmem.includes(JSON.stringify(h.client.config.directory)));
+  assert.equal(systemPromptOptions.sections.other, "Unrelated instructions");
+  await h.emit("before_agent_start", { systemPromptOptions });
+  assert.equal(systemPromptOptions.sections.optmem.match(/## Memory/g)?.length, 1);
+  systemPromptOptions.selectedTools = ["read"];
+  await h.emit("before_agent_start", { systemPromptOptions });
+  assert.equal(systemPromptOptions.sections.optmem, undefined);
+  assert.equal(systemPromptOptions.sections.other, "Unrelated instructions");
 });
 
 test("first startup initializes only the unset default location", async (t) => {
@@ -255,6 +307,33 @@ test("a blocked wake becomes complete after the model pays compression", async (
   assert.match(snapshotText(await h.context()), /Both facts/);
   const wake = await h.call({ action: "wake" });
   assert.match((wake.content[0] as any).text, /You are awake/);
+});
+
+test("model-facing protocol consistently uses tool calls and refreshes blocked memory automatically", async (t) => {
+  const cwd = await directory(t);
+  const h = harness(cwd, environment());
+  await h.start();
+  const empty = snapshotText(await h.context());
+  assert.match(empty, /optmem \{ action: "note", text:/);
+  assert.doesNotMatch(empty, /\/memo|Run:/);
+  await h.call({ action: "note", text: "First" });
+  const second = await h.call({ action: "note", text: "Second" });
+  const noteOutput = (second.content[0] as any).text as string;
+  assert.match(noteOutput, /Keep what has lasting effect, drop what does not\. Invent nothing\./);
+  assert.match(noteOutput, /optmem \{ action: "nap", block: "0-1", text:/);
+  assert.doesNotMatch(noteOutput, /\/memo|Run:/);
+  const pending = await h.call({ action: "nap" });
+  assert.match((pending.content[0] as any).text, /optmem \{ action: "nap", block: "0-1", text:/);
+  await h.call({ action: "nap", block: "0-1", text: "Both facts" });
+  await h.client.run(["config", "WAKE_LINES=1"]);
+  await h.call({ action: "wake" });
+  const forgotten = await h.call({ action: "forget", block: "0-1" });
+  assert.match((forgotten.content[0] as any).text, /Call `optmem \{ action: "nap" \}`/);
+  const blocked = snapshotText(await h.context());
+  assert.match(blocked, /The extension will refresh memory automatically/);
+  assert.doesNotMatch(blocked, /wake again|\/memo|Run:/);
+  await h.call({ action: "nap", block: "0-1", text: "Rebuilt facts" });
+  assert.match(snapshotText(await h.context()), /Rebuilt facts/);
 });
 
 test("forget invalidates cached summaries and asks for rebuild without deleting raw history", async (t) => {
